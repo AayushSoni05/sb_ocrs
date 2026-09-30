@@ -190,7 +190,62 @@ def best_candidate(
 
 def parse_whole_row_candidates(
     candidates: list[dict[str, Any]],
-) -> dict[str, str | None]:
+) -> dict[str, Any]:
+    """
+    Parse a complete:
+
+        PORT CODE
+        SHIPPING BILL NUMBER
+        SHIPPING DATE
+
+    triplet from whole-row OCR output.
+
+    Example accepted row:
+
+        INSBI6 4874706 09-JUL-26
+
+    We require all three values to occur together.
+    """
+
+    triplets = []
+
+    # ---------------------------------------------------------
+    # Expected pattern
+    #
+    # PORT CODE:
+    #     3-10 alphanumeric characters
+    #
+    # SB NUMBER:
+    #     4-20 characters containing digits
+    #
+    # DATE:
+    #     DD-MMM-YY / DD-MMM-YYYY
+    # ---------------------------------------------------------
+
+    pattern = re.compile(
+        r"""
+        (?P<port>
+            [A-Z0-9]{3,10}
+        )
+
+        \s+
+
+        (?P<sb>
+            [A-Z0-9/-]{4,20}
+        )
+
+        \s+
+
+        (?P<date>
+            \d{1,2}
+            -
+            [A-Z]{3}
+            -
+            \d{2,4}
+        )
+        """,
+        re.IGNORECASE | re.VERBOSE,
+    )
 
     for candidate in candidates:
 
@@ -199,53 +254,120 @@ def parse_whole_row_candidates(
             "",
         )
 
-        tokens = [
-            clean(token)
-            for token in text.split()
-            if clean(token)
-        ]
-
-        if not tokens:
+        if not text:
             continue
 
-        date_token = None
-        remaining = []
+        # OCR may put a leading '-' before the first value.
+        text = text.strip()
 
-        for token in tokens:
+        matches = pattern.finditer(
+            text
+        )
 
-            if date_token is None and valid_date(token):
-                date_token = token
-            else:
-                remaining.append(token)
+        for match in matches:
 
-        port_token = None
-        sb_token = None
+            port = clean(
+                match.group("port")
+            )
 
-        for token in remaining:
+            sb = clean(
+                match.group("sb")
+            )
 
-            if port_token is None and valid_port_code(token):
-                port_token = token
-            elif sb_token is None and valid_shipping_bill_number(token):
-                sb_token = token
+            date = clean(
+                match.group("date")
+            )
 
-        # Only accept this candidate's parse if we found at
-        # least one usable field from it - a completely empty
-        # parse isn't worth returning.
+            # -------------------------------------------------
+            # Validate each part
+            # -------------------------------------------------
 
-        if port_token or sb_token or date_token:
+            if not valid_port_code(
+                port
+            ):
+                continue
 
-            return {
-                "port_code": port_token,
-                "shipping_bill_number": sb_token,
-                "shipping_date": date_token,
-            }
+            if not valid_shipping_bill_number(
+                sb
+            ):
+                continue
+
+            if not valid_date(
+                date
+            ):
+                continue
+
+            triplets.append(
+                {
+                    "port_code": port,
+                    "shipping_bill_number": sb,
+                    "shipping_date": date,
+                    "variant": candidate.get(
+                        "variant"
+                    ),
+                }
+            )
+
+    # ---------------------------------------------------------
+    # Nothing found
+    # ---------------------------------------------------------
+
+    if not triplets:
+
+        return {
+            "port_code": None,
+            "shipping_bill_number": None,
+            "shipping_date": None,
+            "consensus_count": 0,
+        }
+
+    # ---------------------------------------------------------
+    # Find repeated triplets
+    # ---------------------------------------------------------
+
+    counts: dict[
+        tuple[str, str, str],
+        int
+    ] = {}
+
+    for item in triplets:
+
+        key = (
+            item["port_code"],
+            item["shipping_bill_number"],
+            item["shipping_date"],
+        )
+
+        counts[key] = (
+            counts.get(
+                key,
+                0,
+            )
+            + 1
+        )
+
+    # Highest consensus.
+    best_key = max(
+        counts,
+        key=counts.get,
+    )
+
+    consensus_count = counts[
+        best_key
+    ]
 
     return {
-        "port_code": None,
-        "shipping_bill_number": None,
-        "shipping_date": None,
-    }
+        "port_code": best_key[0],
 
+        "shipping_bill_number":
+            best_key[1],
+
+        "shipping_date":
+            best_key[2],
+
+        "consensus_count":
+            consensus_count,
+    }
 
 # =========================================================
 # FINAL EXTRACTION
@@ -254,6 +376,91 @@ def parse_whole_row_candidates(
 def extract_shipping_bill_fields(
     ocr_result: dict[str, Any],
 ) -> dict[str, Any]:
+
+    # =========================================================
+    # FIRST: LOOK FOR A COMPLETE WHOLE-ROW MATCH
+    # =========================================================
+
+    whole_row = parse_whole_row_candidates(
+        ocr_result.get(
+            "whole_row_candidates",
+            [],
+        )
+    )
+
+    # =========================================================
+    # PRIMARY PATH
+    # =========================================================
+    #
+    # If at least 2 OCR variants independently produce
+    # the SAME complete triplet, use that triplet.
+    #
+    # Example:
+    #
+    # Variant 1:
+    #     INSBI6 4874706 09-JUL-26
+    #
+    # Variant 2:
+    #     INSBI6 4874706 09-JUL-26
+    #
+    # Variant 3:
+    #     INSBI6 4874706 09-JUL-26
+    #
+    # This is much stronger than accepting one bad
+    # individual-cell result.
+    # =========================================================
+
+    if whole_row["consensus_count"] >= 2:
+
+        result = {
+            "port_code":
+                whole_row["port_code"],
+
+            "shipping_bill_number":
+                whole_row[
+                    "shipping_bill_number"
+                ],
+
+            "shipping_date":
+                whole_row[
+                    "shipping_date"
+                ],
+
+            "confidence": {
+                # These are left at 0 because the whole-row
+                # OCR path currently uses image_to_string()
+                # and does not provide word confidence.
+                #
+                # Do NOT pretend that consensus count is
+                # Tesseract confidence.
+                "port_code": 0.0,
+
+                "shipping_bill_number": 0.0,
+
+                "shipping_date": 0.0,
+            },
+
+            "used_whole_row_fallback": True,
+
+            "whole_row_consensus_count":
+                whole_row[
+                    "consensus_count"
+                ],
+
+            "extraction_source":
+                "whole_row_consensus",
+
+            # We have a strong extraction signal, but we
+            # don't yet have actual OCR confidence for this
+            # path.
+            "needs_review": False,
+        }
+
+        return result
+
+    # =========================================================
+    # SECONDARY PATH: INDIVIDUAL CELLS
+    # =========================================================
 
     port_code, port_confidence = (
         best_candidate(
@@ -285,88 +492,56 @@ def extract_shipping_bill_fields(
         )
     )
 
-    # ---------------------------------------------------
-    # Which fields came from a cell too small to trust at
-    # all (see MIN_READABLE_HEIGHT_PX in ocr.py)? For those,
-    # don't even trust the whole-row fallback guess - the
-    # underlying pixels are the same low-res source, so a
-    # different OCR pass over them just produces a different
-    # wrong answer, not a real one. Leave these None so they
-    # surface as needs_review / manual entry instead of
-    # silently storing a plausible-looking wrong value.
-    # ---------------------------------------------------
+    # =========================================================
+    # LOW-RESOLUTION FIELDS
+    # =========================================================
 
     low_res_fields = [
+
         field
+
         for field, candidates in [
-            ("port_code", ocr_result.get("port_code_candidates", [])),
-            ("shipping_bill_number", ocr_result.get("shipping_bill_candidates", [])),
-            ("shipping_date", ocr_result.get("shipping_date_candidates", [])),
+
+            (
+                "port_code",
+                ocr_result.get(
+                    "port_code_candidates",
+                    [],
+                ),
+            ),
+
+            (
+                "shipping_bill_number",
+                ocr_result.get(
+                    "shipping_bill_candidates",
+                    [],
+                ),
+            ),
+
+            (
+                "shipping_date",
+                ocr_result.get(
+                    "shipping_date_candidates",
+                    [],
+                ),
+            ),
         ]
-        if any(c.get("low_resolution") for c in candidates)
+
+        if any(
+            candidate.get(
+                "low_resolution"
+            )
+            for candidate in candidates
+        )
     ]
 
-    # ---------------------------------------------------
-    # Fallback pass: for any field that came back empty or
-    # zero-confidence (but was NOT flagged low-resolution),
-    # try the whole-row parse instead.
-    # ---------------------------------------------------
-
-    used_fallback = False
-
-    needs_fallback = (
-        not port_code
-        or not shipping_bill_number
-        or not shipping_date
-        or min(
-            port_confidence,
-            sb_confidence,
-            date_confidence,
-        )
-        <= 0.0
-    )
-
-    if needs_fallback:
-
-        fallback = parse_whole_row_candidates(
-            ocr_result.get(
-                "whole_row_candidates",
-                [],
-            )
-        )
-
-        if not port_code and fallback["port_code"] and "port_code" not in low_res_fields:
-            port_code = fallback["port_code"]
-            used_fallback = True
-
-        if (
-            not shipping_bill_number
-            and fallback["shipping_bill_number"]
-            and "shipping_bill_number" not in low_res_fields
-        ):
-            shipping_bill_number = fallback["shipping_bill_number"]
-            used_fallback = True
-
-        if (
-            not shipping_date
-            and fallback["shipping_date"]
-            and "shipping_date" not in low_res_fields
-        ):
-            shipping_date = fallback["shipping_date"]
-            used_fallback = True
-
-    # Belt-and-suspenders: make sure low-res fields are None
-    # in the final output even if something upstream slipped
-    # a value through.
-    if "port_code" in low_res_fields:
-        port_code = None
-    if "shipping_bill_number" in low_res_fields:
-        shipping_bill_number = None
-    if "shipping_date" in low_res_fields:
-        shipping_date = None
+    # =========================================================
+    # FINAL SECONDARY RESULT
+    # =========================================================
 
     result = {
-        "port_code": port_code,
+        "port_code":
+            port_code,
 
         "shipping_bill_number":
             shipping_bill_number,
@@ -394,16 +569,27 @@ def extract_shipping_bill_fields(
                 ),
         },
 
-        "used_whole_row_fallback": used_fallback,
+        "used_whole_row_fallback":
+            False,
 
-        "low_resolution_fields": low_res_fields,
+        "whole_row_consensus_count":
+            whole_row[
+                "consensus_count"
+            ],
 
-        "needs_review": not all(
-            [
-                port_code,
-                shipping_bill_number,
-                shipping_date,
-            ]
+        "extraction_source":
+            "individual_cells",
+
+        "low_resolution_fields":
+            low_res_fields,
+
+        "needs_review": not (
+            port_code
+            and shipping_bill_number
+            and shipping_date
+            and port_confidence >= 0.80
+            and sb_confidence >= 0.80
+            and date_confidence >= 0.80
         ),
     }
 
