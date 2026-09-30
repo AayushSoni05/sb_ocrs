@@ -25,6 +25,7 @@ from pathlib import Path
 from src.ocr import ShippingBillOCR
 from src.extractor import extract_shipping_bill_fields
 from pdf import pdf_page_to_png
+from src.database import save_shipping_bill
 
 
 OUTPUT_DIR = Path(
@@ -301,7 +302,6 @@ def main() -> None:
         )
 
         sys.exit(1)
-
     # =================================================
     # FINAL JSON
     # =================================================
@@ -317,6 +317,50 @@ def main() -> None:
             ensure_ascii=False,
         )
     )
+
+    # =================================================
+    # DATABASE
+    # =================================================
+
+    print_section(
+        "DATABASE"
+    )
+
+    if (
+        not fields.get("needs_review", True)
+        and fields.get("port_code")
+        and fields.get("shipping_bill_number")
+        and fields.get("shipping_date")
+    ):
+
+        try:
+
+            record_id = save_shipping_bill(
+                fields
+            )
+
+        except Exception as error:
+
+            print_section(
+                "DATABASE ERROR"
+            )
+
+            print(
+                repr(error)
+            )
+
+            sys.exit(1)
+
+        print(
+            f"PostgreSQL record inserted: ID={record_id}"
+        )
+
+    else:
+
+        print(
+            "Database insert skipped: "
+            "required fields are missing or manual review is required."
+        )
 
     # =================================================
     # SAVE JSON

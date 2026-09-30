@@ -3,3 +3,4 @@ Pillow
 opencv-python
 pytesseract
 numpy
+pg8000
