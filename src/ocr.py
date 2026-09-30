@@ -96,18 +96,19 @@ class ShippingBillOCR:
         height, width = image.shape[:2]
 
         # -------------------------------------------------
-        # Coordinates measured directly off the supplied
-        # Shipping Bill sample (674x845 px source), targeting
-        # ONLY the "Port Code / SB No / SB Date" label+value
-        # rows in the top-right box - not the rows below it
-        # (IEC/Br, GSTIN/TYPE, CB CODE, etc).
+        # Shipping Bill header:
+        #
+        # PORT CODE | SB NO | SB DATE
+        #
+        # We include the complete top-right information box
+        # so the value row is available to split_header().
         # -------------------------------------------------
 
-        x1 = int(width * 0.51)
-        y1 = int(height * 0.0275)
+        x1 = int(width * 0.49)
+        y1 = int(height * 0.038)
 
-        x2 = int(width * 0.855)
-        y2 = int(height * 0.052)
+        x2 = int(width * 0.83)
+        y2 = int(height * 0.135)
 
         crop = image[
             y1:y2,
@@ -426,17 +427,29 @@ class ShippingBillOCR:
             header.shape[:2]
         )
 
-        # The header crop (from crop_header) contains the
-        # green label row ("Port Code | SB No | SB Date")
-        # followed immediately by the value row
-        # ("INKKU6 | 3705955 | 30-MAY-26"). We want the
-        # VALUE row only, so we take roughly the bottom half.
+        # -------------------------------------------------
+        # The header crop contains:
+        #
+        #     PORT CODE | SB NO | SB DATE
+        #     INKKU6    | 3705955 | 30-MAY-26
+        #
+        # followed by:
+        #
+        # IEC/Br
+        # GSTIN/TYPE
+        # CB CODE
+        # ...
+        #
+        # We only want the first VALUE row.
+        # -------------------------------------------------
 
         value_y1 = int(
-            height * 0.55
+            height * 0.12
         )
 
-        value_y2 = height
+        value_y2 = int(
+            height * 0.30
+        )
 
         value_row = header[
             value_y1:value_y2,
@@ -448,35 +461,41 @@ class ShippingBillOCR:
         )
 
         # -------------------------------------------------
-        # Three columns - measured directly off the sample
-        # value row's vertical grid lines:
+        # Three columns
         #
-        # Port Code : 0%   - 34%
-        # SB No     : 34%  - 72%
-        # SB Date   : 72%  - 100%
+        # PORT CODE
+        #   ~0% -> 32%
+        #
+        # SB NO
+        #   ~32% -> 66%
+        #
+        # SB DATE
+        #   ~66% -> 100%
         # -------------------------------------------------
 
         port_x1 = 0
+
         port_x2 = int(
-            row_width * 0.34
+            row_width * 0.32
         )
 
         sb_x1 = int(
-            row_width * 0.34
+            row_width * 0.32
         )
 
         sb_x2 = int(
-            row_width * 0.72
+            row_width * 0.66
         )
 
         date_x1 = int(
-            row_width * 0.72
+            row_width * 0.66
         )
 
         date_x2 = row_width
 
         return {
             "value_row": value_row,
+
             "port_code": value_row[
                 :,
                 port_x1:port_x2,
@@ -492,7 +511,6 @@ class ShippingBillOCR:
                 date_x1:date_x2,
             ],
         }
-
     # =====================================================
     # COMPLETE EXTRACTION
     # =====================================================
