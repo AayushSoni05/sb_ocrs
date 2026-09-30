@@ -1,613 +1,253 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
-import pytesseract
-from PIL import Image
 
+def clean(
+    value: str,
+) -> str:
 
-# Tesseract executable
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+    value = value.upper()
 
+    value = value.strip()
 
-def normalize_text(text: str) -> str:
-    """Basic OCR cleanup."""
-
-    text = text.upper()
-
-    text = text.replace("\n", " ")
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip()
-
-
-def preprocess_field(
-    image: Image.Image,
-) -> Image.Image:
-    """
-    Conservative preprocessing for a cropped field.
-    """
-
-    image = image.convert("RGB")
-
-    img = np.array(image)
-
-    gray = cv2.cvtColor(
-        img,
-        cv2.COLOR_RGB2GRAY,
+    value = re.sub(
+        r"\s+",
+        "",
+        value,
     )
 
-    # Upscale the small field
-    gray = cv2.resize(
-        gray,
-        None,
-        fx=3,
-        fy=3,
-        interpolation=cv2.INTER_CUBIC,
+    return value
+
+
+# =========================================================
+# PORT CODE
+# =========================================================
+
+def valid_port_code(
+    value: str,
+) -> bool:
+
+    value = clean(
+        value
     )
 
-    # Local contrast
-    clahe = cv2.createCLAHE(
-        clipLimit=2.0,
-        tileGridSize=(8, 8),
-    )
+    if not value:
+        return False
 
-    enhanced = clahe.apply(gray)
+    # Port codes on the form are short
+    # alphanumeric identifiers.
 
-    # Gentle sharpening
-    blurred = cv2.GaussianBlur(
-        enhanced,
-        (0, 0),
-        1,
-    )
-
-    sharpened = cv2.addWeighted(
-        enhanced,
-        1.5,
-        blurred,
-        -0.5,
-        0,
-    )
-
-    return Image.fromarray(
-        sharpened
-    )
-
-
-def field_ocr(
-    image: Image.Image,
-    whitelist: str,
-    psm: int = 7,
-) -> tuple[str, float]:
-    """
-    OCR a single field.
-
-    psm 7 = single text line.
-    """
-
-    processed = preprocess_field(
-        image
-    )
-
-    config = (
-        f"--oem 3 --psm {psm} "
-        f"-c tessedit_char_whitelist={whitelist} "
-        "-c load_system_dawg=0 "
-        "-c load_freq_dawg=0"
-    )
-
-    data = pytesseract.image_to_data(
-        processed,
-        lang="eng",
-        config=config,
-        output_type=pytesseract.Output.DICT,
-    )
-
-    texts = []
-    confidences = []
-
-    for i, text in enumerate(
-        data["text"]
+    if not (
+        3
+        <= len(value)
+        <= 10
     ):
-
-        text = text.strip()
-
-        if not text:
-            continue
-
-        texts.append(text)
-
-        try:
-            confidence = float(
-                data["conf"][i]
-            )
-
-            if confidence >= 0:
-                confidences.append(
-                    confidence
-                )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            pass
-
-    result = " ".join(texts)
-
-    confidence = (
-        sum(confidences)
-        / len(confidences)
-        / 100
-        if confidences
-        else 0
-    )
-
-    return (
-        result.strip(),
-        round(confidence, 4),
-    )
-
-
-def clean_code(
-    text: str,
-) -> str:
-    """
-    Clean common OCR artifacts in identifiers.
-    """
-
-    text = normalize_text(text)
-
-    text = text.replace(" ", "")
-    text = text.replace("|", "I")
-
-    return text
-
-
-def clean_date(
-    text: str,
-) -> str:
-    """
-    Keep only date-like characters.
-    """
-
-    text = normalize_text(text)
-
-    text = text.replace(" ", "")
-
-    text = text.replace(",", ".")
-
-    return text
-
-
-def validate_shipping_bill_number(
-    value: str,
-) -> bool:
-    """
-    General validation for a Shipping Bill number.
-
-    We intentionally do not assume a single exact format.
-    """
-
-    if not value:
         return False
 
     return bool(
         re.fullmatch(
-            r"[A-Z0-9][A-Z0-9\/\-]{3,30}",
+            r"[A-Z0-9]+",
             value,
         )
     )
 
 
-def validate_invoice_number(
+# =========================================================
+# SHIPPING BILL NUMBER
+# =========================================================
+
+def valid_shipping_bill_number(
     value: str,
 ) -> bool:
+
+    value = clean(
+        value
+    )
 
     if not value:
         return False
 
+    # Never allow a date to become an SB number.
+
+    if valid_date(value):
+        return False
+
+    # Must contain at least one number.
+
+    if not re.search(
+        r"\d",
+        value,
+    ):
+        return False
+
+    if not (
+        4
+        <= len(value)
+        <= 20
+    ):
+        return False
+
     return bool(
         re.fullmatch(
-            r"[A-Z0-9][A-Z0-9\/\-_\.]{2,40}",
+            r"[A-Z0-9/-]+",
             value,
         )
     )
 
 
-def find_label(
-    words: list[dict[str, Any]],
-    labels: list[str],
-) -> dict[str, Any] | None:
-    """
-    Find a label in OCR words.
+# =========================================================
+# DATE
+# =========================================================
 
-    Uses normalized text and substring matching.
-    """
+def valid_date(
+    value: str,
+) -> bool:
 
-    normalized_labels = [
-        label.upper()
-        for label in labels
+    value = clean(
+        value
+    )
+
+    patterns = [
+        r"\d{1,2}-[A-Z]{3}-\d{2,4}",
+        r"\d{1,2}/\d{1,2}/\d{2,4}",
+        r"\d{1,2}-\d{1,2}-\d{2,4}",
+        r"\d{1,2}\.[A-Z]{3}\.\d{2,4}",
     ]
 
-    for word in words:
+    return any(
+        re.fullmatch(
+            pattern,
+            value,
+        )
+        for pattern in patterns
+    )
 
-        text = normalize_text(
-            word["text"]
+
+# =========================================================
+# SELECT BEST CANDIDATE
+# =========================================================
+
+def best_candidate(
+    candidates: list[dict[str, Any]],
+    validator,
+) -> tuple[str | None, float]:
+
+    valid_candidates = []
+
+    for candidate in candidates:
+
+        text = clean(
+            candidate["text"]
         )
 
-        for label in normalized_labels:
-
-            if label in text:
-                return word
-
-    return None
-
-
-def crop_right_of_label(
-    image: Image.Image,
-    label_word: dict[str, Any],
-    right_width: int = 900,
-    height: int = 180,
-) -> Image.Image:
-    """
-    Crop the area to the right of a label.
-    """
-
-    image_width, image_height = (
-        image.size
-    )
-
-    left = max(
-        0,
-        label_word["right"] - 10,
-    )
-
-    top = max(
-        0,
-        label_word["top"] - 30,
-    )
-
-    right = min(
-        image_width,
-        left + right_width,
-    )
-
-    bottom = min(
-        image_height,
-        top + height,
-    )
-
-    return image.crop(
-        (
-            left,
-            top,
-            right,
-            bottom,
+        confidence = float(
+            candidate["confidence"]
         )
-    )
 
+        if validator(text):
 
-def crop_below_label(
-    image: Image.Image,
-    label_word: dict[str, Any],
-    width: int = 900,
-    height: int = 220,
-) -> Image.Image:
-    """
-    Crop the area below a label.
-    """
+            valid_candidates.append(
+                (
+                    text,
+                    confidence,
+                )
+            )
 
-    image_width, image_height = (
-        image.size
-    )
+    if not valid_candidates:
 
-    left = max(
-        0,
-        label_word["left"] - 30,
-    )
-
-    top = label_word["bottom"]
-
-    right = min(
-        image_width,
-        left + width,
-    )
-
-    bottom = min(
-        image_height,
-        top + height,
-    )
-
-    return image.crop(
-        (
-            left,
-            top,
-            right,
-            bottom,
+        return (
+            None,
+            0.0,
         )
+
+    # Highest confidence.
+    valid_candidates.sort(
+        key=lambda item: (
+            item[1],
+            len(item[0]),
+        ),
+        reverse=True,
     )
 
+    return valid_candidates[0]
+
+
+# =========================================================
+# FINAL EXTRACTION
+# =========================================================
 
 def extract_shipping_bill_fields(
-    image_path: str | Path,
     ocr_result: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Extract:
-        - Shipping Bill Number
-        - Shipping Date
-        - Invoice Number
 
-    from OCR layout information.
-    """
-
-    image_path = Path(
-        image_path
+    port_code, port_confidence = (
+        best_candidate(
+            ocr_result.get(
+                "port_code_candidates",
+                [],
+            ),
+            valid_port_code,
+        )
     )
 
-    image = Image.open(
-        image_path
+    shipping_bill_number, sb_confidence = (
+        best_candidate(
+            ocr_result.get(
+                "shipping_bill_candidates",
+                [],
+            ),
+            valid_shipping_bill_number,
+        )
     )
 
-    words = ocr_result.get(
-        "words",
-        [],
+    shipping_date, date_confidence = (
+        best_candidate(
+            ocr_result.get(
+                "shipping_date_candidates",
+                [],
+            ),
+            valid_date,
+        )
     )
 
     result = {
-        "shipping_bill_number": None,
-        "shipping_date": None,
-        "invoice_number": None,
+        "port_code": port_code,
+
+        "shipping_bill_number":
+            shipping_bill_number,
+
+        "shipping_date":
+            shipping_date,
 
         "confidence": {
-            "shipping_bill_number": 0.0,
-            "shipping_date": 0.0,
-            "invoice_number": 0.0,
+            "port_code":
+                round(
+                    port_confidence,
+                    4,
+                ),
+
+            "shipping_bill_number":
+                round(
+                    sb_confidence,
+                    4,
+                ),
+
+            "shipping_date":
+                round(
+                    date_confidence,
+                    4,
+                ),
         },
 
-        "needs_review": True,
+        "needs_review": not all(
+            [
+                port_code,
+                shipping_bill_number,
+                shipping_date,
+            ]
+        ),
     }
-
-    # -------------------------------------------------
-    # SHIPPING BILL NUMBER
-    # -------------------------------------------------
-
-    shipping_label = find_label(
-        words,
-        [
-            "SHIPPING BILL NO",
-            "SHIPPING BILL NUMBER",
-            "SB NO",
-            "SB NUMBER",
-            "SHIPPING BILL",
-        ],
-    )
-
-    if shipping_label:
-
-        crops = [
-            crop_right_of_label(
-                image,
-                shipping_label,
-            ),
-            crop_below_label(
-                image,
-                shipping_label,
-            ),
-        ]
-
-        candidates = []
-
-        for crop in crops:
-
-            text, confidence = field_ocr(
-                crop,
-                whitelist=(
-                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                    "0123456789/-"
-                ),
-                psm=7,
-            )
-
-            value = clean_code(
-                text
-            )
-
-            if validate_shipping_bill_number(
-                value
-            ):
-                candidates.append(
-                    (
-                        value,
-                        confidence,
-                    )
-                )
-
-        if candidates:
-
-            best = max(
-                candidates,
-                key=lambda item: item[1],
-            )
-
-            result[
-                "shipping_bill_number"
-            ] = best[0]
-
-            result[
-                "confidence"
-            ][
-                "shipping_bill_number"
-            ] = best[1]
-
-    # -------------------------------------------------
-    # SHIPPING DATE
-    # -------------------------------------------------
-
-    date_label = find_label(
-        words,
-        [
-            "SB DATE",
-            "SHIPPING DATE",
-            "DATE OF SHIPMENT",
-            "SHIPPED ON BOARD",
-        ],
-    )
-
-    if date_label:
-
-        crops = [
-            crop_right_of_label(
-                image,
-                date_label,
-            ),
-            crop_below_label(
-                image,
-                date_label,
-            ),
-        ]
-
-        candidates = []
-
-        for crop in crops:
-
-            text, confidence = field_ocr(
-                crop,
-                whitelist=(
-                    "0123456789"
-                    "/-.:"
-                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                ),
-                psm=7,
-            )
-
-            value = clean_date(
-                text
-            )
-
-            if re.search(
-                r"\d{1,2}.*\d{1,2}.*\d{2,4}",
-                value,
-            ):
-                candidates.append(
-                    (
-                        value,
-                        confidence,
-                    )
-                )
-
-        if candidates:
-
-            best = max(
-                candidates,
-                key=lambda item: item[1],
-            )
-
-            result[
-                "shipping_date"
-            ] = best[0]
-
-            result[
-                "confidence"
-            ][
-                "shipping_date"
-            ] = best[1]
-
-    # -------------------------------------------------
-    # INVOICE NUMBER
-    # -------------------------------------------------
-
-    invoice_label = find_label(
-        words,
-        [
-            "INVOICE NO",
-            "INVOICE NUMBER",
-            "INV NO",
-            "INVOICE",
-        ],
-    )
-
-    if invoice_label:
-
-        crops = [
-            crop_right_of_label(
-                image,
-                invoice_label,
-            ),
-            crop_below_label(
-                image,
-                invoice_label,
-            ),
-        ]
-
-        candidates = []
-
-        for crop in crops:
-
-            text, confidence = field_ocr(
-                crop,
-                whitelist=(
-                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                    "0123456789/-_."
-                ),
-                psm=7,
-            )
-
-            value = clean_code(
-                text
-            )
-
-            if validate_invoice_number(
-                value
-            ):
-                candidates.append(
-                    (
-                        value,
-                        confidence,
-                    )
-                )
-
-        if candidates:
-
-            best = max(
-                candidates,
-                key=lambda item: item[1],
-            )
-
-            result[
-                "invoice_number"
-            ] = best[0]
-
-            result[
-                "confidence"
-            ][
-                "invoice_number"
-            ] = best[1]
-
-    # -------------------------------------------------
-    # REVIEW DECISION
-    # -------------------------------------------------
-
-    field_confidences = result[
-        "confidence"
-    ]
-
-    valid_fields = 0
-
-    for confidence in field_confidences.values():
-
-        if confidence >= 0.80:
-            valid_fields += 1
-
-    result[
-        "needs_review"
-    ] = valid_fields < 2
 
     return result
