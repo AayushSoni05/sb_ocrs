@@ -138,6 +138,9 @@ def best_candidate(
 
     for candidate in candidates:
 
+        if candidate.get("low_resolution"):
+            continue
+
         text = clean(
             candidate["text"]
         )
@@ -172,6 +175,76 @@ def best_candidate(
     )
 
     return valid_candidates[0]
+
+
+# =========================================================
+# FALLBACK: PARSE THE WHOLE VALUE ROW TEXT
+# =========================================================
+#
+# Used when the cell-based approach fails/has 0 confidence -
+# typically on low-resolution images where each individual
+# cell was too small for Tesseract to read reliably. Here we
+# work from ONE OCR pass over the whole row instead, and pick
+# out the 3 values by what they look like (a date pattern, an
+# identifier with a digit, etc) rather than by position.
+
+def parse_whole_row_candidates(
+    candidates: list[dict[str, Any]],
+) -> dict[str, str | None]:
+
+    for candidate in candidates:
+
+        text = candidate.get(
+            "text",
+            "",
+        )
+
+        tokens = [
+            clean(token)
+            for token in text.split()
+            if clean(token)
+        ]
+
+        if not tokens:
+            continue
+
+        date_token = None
+        remaining = []
+
+        for token in tokens:
+
+            if date_token is None and valid_date(token):
+                date_token = token
+            else:
+                remaining.append(token)
+
+        port_token = None
+        sb_token = None
+
+        for token in remaining:
+
+            if port_token is None and valid_port_code(token):
+                port_token = token
+            elif sb_token is None and valid_shipping_bill_number(token):
+                sb_token = token
+
+        # Only accept this candidate's parse if we found at
+        # least one usable field from it - a completely empty
+        # parse isn't worth returning.
+
+        if port_token or sb_token or date_token:
+
+            return {
+                "port_code": port_token,
+                "shipping_bill_number": sb_token,
+                "shipping_date": date_token,
+            }
+
+    return {
+        "port_code": None,
+        "shipping_bill_number": None,
+        "shipping_date": None,
+    }
 
 
 # =========================================================
@@ -212,6 +285,86 @@ def extract_shipping_bill_fields(
         )
     )
 
+    # ---------------------------------------------------
+    # Which fields came from a cell too small to trust at
+    # all (see MIN_READABLE_HEIGHT_PX in ocr.py)? For those,
+    # don't even trust the whole-row fallback guess - the
+    # underlying pixels are the same low-res source, so a
+    # different OCR pass over them just produces a different
+    # wrong answer, not a real one. Leave these None so they
+    # surface as needs_review / manual entry instead of
+    # silently storing a plausible-looking wrong value.
+    # ---------------------------------------------------
+
+    low_res_fields = [
+        field
+        for field, candidates in [
+            ("port_code", ocr_result.get("port_code_candidates", [])),
+            ("shipping_bill_number", ocr_result.get("shipping_bill_candidates", [])),
+            ("shipping_date", ocr_result.get("shipping_date_candidates", [])),
+        ]
+        if any(c.get("low_resolution") for c in candidates)
+    ]
+
+    # ---------------------------------------------------
+    # Fallback pass: for any field that came back empty or
+    # zero-confidence (but was NOT flagged low-resolution),
+    # try the whole-row parse instead.
+    # ---------------------------------------------------
+
+    used_fallback = False
+
+    needs_fallback = (
+        not port_code
+        or not shipping_bill_number
+        or not shipping_date
+        or min(
+            port_confidence,
+            sb_confidence,
+            date_confidence,
+        )
+        <= 0.0
+    )
+
+    if needs_fallback:
+
+        fallback = parse_whole_row_candidates(
+            ocr_result.get(
+                "whole_row_candidates",
+                [],
+            )
+        )
+
+        if not port_code and fallback["port_code"] and "port_code" not in low_res_fields:
+            port_code = fallback["port_code"]
+            used_fallback = True
+
+        if (
+            not shipping_bill_number
+            and fallback["shipping_bill_number"]
+            and "shipping_bill_number" not in low_res_fields
+        ):
+            shipping_bill_number = fallback["shipping_bill_number"]
+            used_fallback = True
+
+        if (
+            not shipping_date
+            and fallback["shipping_date"]
+            and "shipping_date" not in low_res_fields
+        ):
+            shipping_date = fallback["shipping_date"]
+            used_fallback = True
+
+    # Belt-and-suspenders: make sure low-res fields are None
+    # in the final output even if something upstream slipped
+    # a value through.
+    if "port_code" in low_res_fields:
+        port_code = None
+    if "shipping_bill_number" in low_res_fields:
+        shipping_bill_number = None
+    if "shipping_date" in low_res_fields:
+        shipping_date = None
+
     result = {
         "port_code": port_code,
 
@@ -240,6 +393,10 @@ def extract_shipping_bill_fields(
                     4,
                 ),
         },
+
+        "used_whole_row_fallback": used_fallback,
+
+        "low_resolution_fields": low_res_fields,
 
         "needs_review": not all(
             [

@@ -1,0 +1,13 @@
+{
+    "port_code": "SBN",
+    "shipping_bill_number": "SBD-5",
+    "shipping_date": null,
+    "confidence": {
+        "port_code": 0.0,
+        "shipping_bill_number": 0.0,
+        "shipping_date": 0.0
+    },
+    "used_whole_row_fallback": true,
+    "low_resolution_fields": [],
+    "needs_review": true
+}

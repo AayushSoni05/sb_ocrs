@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import platform
+import shutil
+
 import cv2
 import numpy as np
 import pytesseract
@@ -11,24 +14,43 @@ import pytesseract
 # =========================================================
 # TESSERACT PATH
 # =========================================================
+#
+# On Windows, pytesseract can't find tesseract.exe on PATH by default,
+# so point it at the common install location. On Mac/Linux, tesseract
+# is normally already on PATH after `brew install tesseract` or
+# `apt install tesseract-ocr`, so we leave pytesseract's default alone.
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+if platform.system() == "Windows":
+
+    default_windows_path = (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    )
+
+    if Path(default_windows_path).exists():
+
+        pytesseract.pytesseract.tesseract_cmd = default_windows_path
 
 
 class ShippingBillOCR:
 
     def __init__(self) -> None:
 
-        if not Path(
-            pytesseract.pytesseract.tesseract_cmd
-        ).exists():
+        tesseract_cmd = pytesseract.pytesseract.tesseract_cmd
+
+        found = (
+            Path(tesseract_cmd).exists()
+            if platform.system() == "Windows"
+            else shutil.which(tesseract_cmd) is not None
+        )
+
+        if not found:
 
             raise FileNotFoundError(
-                "Tesseract was not found at:\n"
-                f"{pytesseract.pytesseract.tesseract_cmd}\n\n"
-                "Update the path in src/ocr.py."
+                "Tesseract was not found.\n\n"
+                "Install it first:\n"
+                "  macOS:   brew install tesseract\n"
+                "  Linux:   sudo apt install tesseract-ocr\n"
+                "  Windows: https://github.com/UB-Mannheim/tesseract/wiki\n"
             )
 
     # =====================================================
@@ -74,17 +96,18 @@ class ShippingBillOCR:
         height, width = image.shape[:2]
 
         # -------------------------------------------------
-        # Coordinates determined from the supplied
-        # Shipping Bill layout.
-        #
-        # The header table is near the upper-right.
+        # Coordinates measured directly off the supplied
+        # Shipping Bill sample (674x845 px source), targeting
+        # ONLY the "Port Code / SB No / SB Date" label+value
+        # rows in the top-right box - not the rows below it
+        # (IEC/Br, GSTIN/TYPE, CB CODE, etc).
         # -------------------------------------------------
 
-        x1 = int(width * 0.49)
-        y1 = int(height * 0.035)
+        x1 = int(width * 0.51)
+        y1 = int(height * 0.0275)
 
-        x2 = int(width * 0.83)
-        y2 = int(height * 0.145)
+        x2 = int(width * 0.855)
+        y2 = int(height * 0.052)
 
         crop = image[
             y1:y2,
@@ -136,7 +159,7 @@ class ShippingBillOCR:
 
         enlarged = ShippingBillOCR.upscale(
             image,
-            scale=8,
+            scale=12,
         )
 
         gray = cv2.cvtColor(
@@ -201,6 +224,13 @@ class ShippingBillOCR:
     # OCR ONE CELL
     # =====================================================
 
+    # Below this real (pre-upscale) pixel height, individual
+    # characters are too few pixels tall for Tesseract to
+    # read reliably - upscaling a crop this small just blurs
+    # existing pixels, it can't add real detail. Flag it
+    # instead of returning a confident-looking guess.
+    MIN_READABLE_HEIGHT_PX = 20
+
     @staticmethod
     def ocr_cell(
         cell: np.ndarray,
@@ -208,6 +238,27 @@ class ShippingBillOCR:
     ) -> list[dict[str, Any]]:
 
         results = []
+
+        real_height = cell.shape[0]
+
+        if real_height < ShippingBillOCR.MIN_READABLE_HEIGHT_PX:
+
+            results.append(
+                {
+                    "variant": 0,
+                    "text": None,
+                    "confidence": 0.0,
+                    "low_resolution": True,
+                    "note": (
+                        f"Cropped cell is only {real_height}px tall "
+                        f"(need >= {ShippingBillOCR.MIN_READABLE_HEIGHT_PX}px). "
+                        "Source image resolution is too low for reliable "
+                        "OCR here - use a higher-DPI scan/photo."
+                    ),
+                }
+            )
+
+            return results
 
         variants = (
             ShippingBillOCR.preprocessing_variants(
@@ -299,6 +350,70 @@ class ShippingBillOCR:
         return results
 
     # =====================================================
+    # OCR THE WHOLE VALUE ROW (fallback for low-res images)
+    # =====================================================
+    #
+    # Splitting into 3 tiny cells works well on high-res
+    # scans, but on a low-res image each cell can be only a
+    # few pixels tall - too little real detail for Tesseract,
+    # even after upscaling (upscaling blurs, it doesn't add
+    # information). Reading the WHOLE row as one line gives
+    # Tesseract more surrounding pixels/context per character,
+    # which tends to hold up much better at low resolution.
+
+    @staticmethod
+    def ocr_whole_value_row(
+        value_row: np.ndarray,
+    ) -> list[dict[str, Any]]:
+
+        results = []
+
+        variants = (
+            ShippingBillOCR.preprocessing_variants(
+                value_row
+            )
+        )
+
+        whitelist = (
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/ "
+        )
+
+        for variant_number, variant in enumerate(
+            variants,
+            start=1,
+        ):
+
+            # psm 6 = "assume a single uniform block of
+            # text" - better suited to a whole row of
+            # multiple values than psm 7 (single line,
+            # meant for one tight value).
+
+            config = (
+                "--oem 3 "
+                "--psm 6 "
+                "-c preserve_interword_spaces=1 "
+                f"-c tessedit_char_whitelist={whitelist}"
+            )
+
+            text = pytesseract.image_to_string(
+                variant,
+                lang="eng",
+                config=config,
+            ).strip()
+
+            if not text:
+                continue
+
+            results.append(
+                {
+                    "variant": variant_number,
+                    "text": text,
+                }
+            )
+
+        return results
+
+    # =====================================================
     # SPLIT HEADER INTO THREE CELLS
     # =====================================================
 
@@ -311,18 +426,17 @@ class ShippingBillOCR:
             header.shape[:2]
         )
 
-        # The first data row is immediately below
-        # the green headings.
-        #
-        # We intentionally crop the VALUE row only.
+        # The header crop (from crop_header) contains the
+        # green label row ("Port Code | SB No | SB Date")
+        # followed immediately by the value row
+        # ("INKKU6 | 3705955 | 30-MAY-26"). We want the
+        # VALUE row only, so we take roughly the bottom half.
 
         value_y1 = int(
-            height * 0.27
+            height * 0.55
         )
 
-        value_y2 = int(
-            height * 0.52
-        )
+        value_y2 = height
 
         value_row = header[
             value_y1:value_y2,
@@ -334,38 +448,35 @@ class ShippingBillOCR:
         )
 
         # -------------------------------------------------
-        # Three columns
-        # -------------------------------------------------
-
-        # Based on supplied document:
+        # Three columns - measured directly off the sample
+        # value row's vertical grid lines:
         #
-        # Port Code : ~28%
-        # SB No     : ~61%
-        # SB Date   : remaining
-        #
-        # Small overlap avoids cutting characters.
+        # Port Code : 0%   - 34%
+        # SB No     : 34%  - 72%
+        # SB Date   : 72%  - 100%
         # -------------------------------------------------
 
         port_x1 = 0
         port_x2 = int(
-            row_width * 0.30
+            row_width * 0.34
         )
 
         sb_x1 = int(
-            row_width * 0.27
+            row_width * 0.34
         )
 
         sb_x2 = int(
-            row_width * 0.62
+            row_width * 0.72
         )
 
         date_x1 = int(
-            row_width * 0.59
+            row_width * 0.72
         )
 
         date_x2 = row_width
 
         return {
+            "value_row": value_row,
             "port_code": value_row[
                 :,
                 port_x1:port_x2,
@@ -464,6 +575,16 @@ class ShippingBillOCR:
             whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/:.",
         )
 
+        # -------------------------------------------------
+        # Fallback: OCR the whole (unsplit) value row too.
+        # More context per character than the tiny individual
+        # cells above - helps a lot on low-resolution images.
+        # -------------------------------------------------
+
+        whole_row_results = self.ocr_whole_value_row(
+            cells["value_row"]
+        )
+
         return {
             "header_coordinates": {
                 "x1": coordinates[0],
@@ -477,4 +598,6 @@ class ShippingBillOCR:
             "shipping_bill_candidates": sb_results,
 
             "shipping_date_candidates": date_results,
+
+            "whole_row_candidates": whole_row_results,
         }
