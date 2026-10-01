@@ -1,0 +1,133 @@
+<div class="page">
+
+  <div class="card">
+
+    <h1>Shipping Bill OCR</h1>
+
+    <p class="subtitle">
+      Upload a shipping bill to automatically extract the details.
+    </p>
+
+    <!-- FILE UPLOAD -->
+
+    <div class="field">
+
+      <label for="file">
+        Shipping Bill File
+      </label>
+
+      <input
+        id="file"
+        type="file"
+        accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff"
+        (change)="onFileSelected($event)"
+      />
+
+    </div>
+
+
+    <!-- EXTRACTION STATUS -->
+
+    @if (isExtracting) {
+
+      <p class="status">
+        Extracting data...
+      </p>
+
+    }
+
+
+    <!-- PORT CODE -->
+
+    <div class="field">
+
+      <label for="portCode">
+        Port Code
+      </label>
+
+      <input
+        id="portCode"
+        type="text"
+        [(ngModel)]="portCode"
+        placeholder="Port Code"
+      />
+
+    </div>
+
+
+    <!-- SHIPPING BILL NUMBER -->
+
+    <div class="field">
+
+      <label for="shippingBillNumber">
+        Shipping Bill Number
+      </label>
+
+      <input
+        id="shippingBillNumber"
+        type="text"
+        [(ngModel)]="shippingBillNumber"
+        placeholder="Shipping Bill Number"
+      />
+
+    </div>
+
+    <!-- SHIPPING BILL DATE -->
+
+    <div class="field">
+
+      <label for="shippingDate">
+        Shipping Bill Date
+      </label>
+
+      <input
+        id="shippingDate"
+        type="text"
+        [(ngModel)]="shippingDate"
+        placeholder="Shipping Bill Date"
+      />
+
+    </div>
+
+
+    <!-- SUBMIT -->
+
+    <button
+      type="button"
+      [disabled]="isExtracting || isSubmitting"
+      (click)="submitForm()"
+    >
+
+      @if (isSubmitting) {
+        Saving...
+      } @else {
+        Submit
+      }
+
+    </button>
+
+
+    <!-- SUCCESS MESSAGE -->
+
+    @if (message) {
+
+      <p class="success">
+        {{ message }}
+      </p>
+
+    }
+
+
+    <!-- ERROR MESSAGE -->
+
+    @if (errorMessage) {
+
+      <p class="error">
+        {{ errorMessage }}
+      </p>
+
+    }
+
+  </div>
+
+</div>
