@@ -1,25 +1,8 @@
-"""
-Shipping Bill extraction pipeline.
-
-Supported input:
-
-    PNG
-    JPG
-    JPEG
-    TIFF
-    PDF
-
-For PDFs:
-    PDF -> 600 DPI PNG -> OCR -> extraction -> JSON
-
-For images:
-    Image -> OCR -> extraction -> JSON
-"""
-
 from __future__ import annotations
 
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 from src.ocr import ShippingBillOCR
@@ -27,10 +10,6 @@ from src.extractor import extract_shipping_bill_fields
 from pdf import pdf_page_to_png
 from src.database import save_shipping_bill
 
-
-OUTPUT_DIR = Path(
-    "output"
-)
 
 SUPPORTED_IMAGE_EXTENSIONS = {
     ".png",
@@ -41,23 +20,11 @@ SUPPORTED_IMAGE_EXTENSIONS = {
 }
 
 
-def print_section(
-    title: str,
-) -> None:
-
-    print()
-    print("=" * 70)
-    print(title)
-    print("=" * 70)
-
-
 def prepare_input(
     input_path: Path,
 ) -> tuple[Path, bool]:
 
-    extension = (
-        input_path.suffix.lower()
-    )
+    extension = input_path.suffix.lower()
 
     # -------------------------------------------------
     # IMAGE
@@ -76,10 +43,16 @@ def prepare_input(
 
     if extension == ".pdf":
 
-        rendered_path = (
-            OUTPUT_DIR
-            / "from_pdf.png"
+        temp_file = tempfile.NamedTemporaryFile(
+            suffix=".png",
+            delete=False,
         )
+
+        rendered_path = Path(
+            temp_file.name
+        )
+
+        temp_file.close()
 
         pdf_page_to_png(
             input_path,
@@ -93,35 +66,40 @@ def prepare_input(
             True,
         )
 
-    # -------------------------------------------------
-    # Unsupported
-    # -------------------------------------------------
-
     raise ValueError(
         "Unsupported file type: "
-        f"{extension}\n"
-        "Supported: PDF, PNG, JPG, JPEG, TIF, TIFF"
+        f"{extension}"
+    )
+
+
+def print_json(
+    data: dict,
+) -> None:
+
+    print(
+        json.dumps(
+            data,
+            indent=4,
+            ensure_ascii=False,
+        )
     )
 
 
 def main() -> None:
 
-    # =================================================
+    # -------------------------------------------------
     # ARGUMENT
-    # =================================================
+    # -------------------------------------------------
 
     if len(sys.argv) != 2:
 
-        print(
-            "Usage:"
-        )
-
-        print(
-            r"  python main.py samples\sb_1.png"
-        )
-
-        print(
-            r"  python main.py samples\sb_1.pdf"
+        print_json(
+            {
+                "error": (
+                    "Usage: "
+                    "python main.py <PDF_or_image>"
+                )
+            }
         )
 
         sys.exit(1)
@@ -132,30 +110,24 @@ def main() -> None:
 
     if not input_path.exists():
 
-        print(
-            f"File not found: {input_path}"
+        print_json(
+            {
+                "error": (
+                    f"File not found: {input_path}"
+                )
+            }
         )
 
         sys.exit(1)
 
-    OUTPUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    print_section(
-        "SHIPPING BILL EXTRACTION"
-    )
-
-    print(
-        f"Input: {input_path}"
-    )
-
-    # =================================================
-    # PREPARE INPUT
-    # =================================================
+    rendered_path = None
+    came_from_pdf = False
 
     try:
+
+        # -------------------------------------------------
+        # PREPARE INPUT
+        # -------------------------------------------------
 
         image_path, came_from_pdf = (
             prepare_input(
@@ -163,43 +135,15 @@ def main() -> None:
             )
         )
 
-    except Exception as error:
-
-        print_section(
-            "INPUT ERROR"
+        rendered_path = (
+            image_path
+            if came_from_pdf
+            else None
         )
 
-        print(
-            repr(error)
-        )
-
-        sys.exit(1)
-
-    # =================================================
-    # OCR
-    # =================================================
-
-    print_section(
-        "OCR"
-    )
-
-    print(
-        f"OCR image: {image_path}"
-    )
-
-    if came_from_pdf:
-
-        print(
-            "Source: PDF rendered at 600 DPI"
-        )
-
-    else:
-
-        print(
-            "Source: original image"
-        )
-
-    try:
+        # -------------------------------------------------
+        # OCR
+        # -------------------------------------------------
 
         ocr = ShippingBillOCR()
 
@@ -207,223 +151,75 @@ def main() -> None:
             image_path
         )
 
-    except Exception as error:
+        # -------------------------------------------------
+        # EXTRACTION
+        # -------------------------------------------------
 
-        print_section(
-            "OCR ERROR"
+        fields = extract_shipping_bill_fields(
+            ocr_result
         )
 
-        print(
-            repr(error)
+        # -------------------------------------------------
+        # DATABASE
+        # -------------------------------------------------
+
+        if (
+            not fields.get(
+                "needs_review",
+                True,
+            )
+            and fields.get(
+                "port_code"
+            )
+            and fields.get(
+                "shipping_bill_number"
+            )
+            and fields.get(
+                "shipping_date"
+            )
+        ):
+
+            try:
+
+                record_id = save_shipping_bill(
+                    fields
+                )
+
+                fields["database_id"] = record_id
+
+            except Exception as error:
+
+                fields["database_error"] = str(error)
+
+        # -------------------------------------------------
+        # FINAL JSON ONLY
+        # -------------------------------------------------
+
+        print_json(
+            fields
+)
+
+    except Exception as error:
+
+        print_json(
+            {
+                "error": str(error)
+            }
         )
 
         sys.exit(1)
 
-    # =================================================
-    # OCR CANDIDATES
-    # =================================================
+    finally:
 
-    print_section(
-        "PORT CODE CANDIDATES"
-    )
+        # -------------------------------------------------
+        # DELETE TEMPORARY PDF RENDER
+        # -------------------------------------------------
 
-    for candidate in ocr_result.get(
-        "port_code_candidates",
-        [],
-    ):
+        if rendered_path is not None:
 
-        print(
-            candidate
-        )
-
-    print_section(
-        "SHIPPING BILL CANDIDATES"
-    )
-
-    for candidate in ocr_result.get(
-        "shipping_bill_candidates",
-        [],
-    ):
-
-        print(
-            candidate
-        )
-
-    print_section(
-        "DATE CANDIDATES"
-    )
-
-    for candidate in ocr_result.get(
-        "shipping_date_candidates",
-        [],
-    ):
-
-        print(
-            candidate
-        )
-
-    print_section(
-        "WHOLE ROW CANDIDATES"
-    )
-
-    for candidate in ocr_result.get(
-        "whole_row_candidates",
-        [],
-    ):
-
-        print(
-            candidate
-        )
-
-    # =================================================
-    # EXTRACTION
-    # =================================================
-
-    print_section(
-        "STRUCTURED EXTRACTION"
-    )
-
-    try:
-
-        fields = (
-            extract_shipping_bill_fields(
-                ocr_result
+            rendered_path.unlink(
+                missing_ok=True
             )
-        )
-
-    except Exception as error:
-
-        print_section(
-            "EXTRACTION ERROR"
-        )
-
-        print(
-            repr(error)
-        )
-
-        sys.exit(1)
-    # =================================================
-    # FINAL JSON
-    # =================================================
-
-    print_section(
-        "FINAL JSON"
-    )
-
-    print(
-        json.dumps(
-            fields,
-            indent=4,
-            ensure_ascii=False,
-        )
-    )
-
-    # =================================================
-    # DATABASE
-    # =================================================
-
-    print_section(
-        "DATABASE"
-    )
-
-    if (
-        not fields.get("needs_review", True)
-        and fields.get("port_code")
-        and fields.get("shipping_bill_number")
-        and fields.get("shipping_date")
-    ):
-
-        try:
-
-            record_id = save_shipping_bill(
-                fields
-            )
-
-        except Exception as error:
-
-            print_section(
-                "DATABASE ERROR"
-            )
-
-            print(
-                repr(error)
-            )
-
-            sys.exit(1)
-
-        print(
-            f"PostgreSQL record inserted: ID={record_id}"
-        )
-
-    else:
-
-        print(
-            "Database insert skipped: "
-            "required fields are missing or manual review is required."
-        )
-
-    # =================================================
-    # SAVE JSON
-    # =================================================
-
-    output_file = (
-        OUTPUT_DIR
-        / "shipping_bill_result.json"
-    )
-
-    try:
-
-        with output_file.open(
-            "w",
-            encoding="utf-8",
-        ) as file:
-
-            json.dump(
-                fields,
-                file,
-                indent=4,
-                ensure_ascii=False,
-            )
-
-    except Exception as error:
-
-        print_section(
-            "JSON SAVE ERROR"
-        )
-
-        print(
-            repr(error)
-        )
-
-        sys.exit(1)
-
-    print()
-    print(
-        f"JSON saved to: {output_file}"
-    )
-
-    # =================================================
-    # REVIEW
-    # =================================================
-
-    print()
-
-    if fields.get(
-        "needs_review",
-        True,
-    ):
-
-        print(
-            "REVIEW STATUS: "
-            "MANUAL REVIEW REQUIRED"
-        )
-
-    else:
-
-        print(
-            "REVIEW STATUS: "
-            "ALL REQUIRED FIELDS EXTRACTED"
-        )
 
 
 if __name__ == "__main__":

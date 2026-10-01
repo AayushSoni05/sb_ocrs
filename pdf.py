@@ -15,7 +15,7 @@ import pymupdf as fitz
 
 def pdf_page_to_png(
     pdf_path: str | Path,
-    output_path: str | Path = "output/from_pdf.png",
+    output_path: str | Path = "temp_from_pdf.png",
     page_number: int = 0,
     dpi: int = 600,
 ) -> Path:
@@ -76,31 +76,14 @@ def pdf_page_to_png(
             alpha=False,
         )
 
-        output_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        if output_path.parent != Path("."):
+            output_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
         pix.save(
             str(output_path)
-        )
-
-        print()
-        print(
-            f"Rendered PDF page {page_number + 1}"
-        )
-
-        print(
-            f"DPI: {dpi}"
-        )
-
-        print(
-            f"Image size: "
-            f"{pix.width} x {pix.height}"
-        )
-
-        print(
-            f"Saved: {output_path}"
         )
 
         return output_path

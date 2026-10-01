@@ -531,45 +531,11 @@ class ShippingBillOCR:
         )
 
         # -------------------------------------------------
-        # Save debugging image
-        # -------------------------------------------------
-
-        Path(
-            "output"
-        ).mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        cv2.imwrite(
-            "output/header_crop.png",
-            header,
-        )
-
-        # -------------------------------------------------
         # Split into cells
         # -------------------------------------------------
 
         cells = self.split_header(
             header
-        )
-
-        # Save each cell
-        cv2.imwrite(
-            "output/port_cell.png",
-            cells["port_code"],
-        )
-
-        cv2.imwrite(
-            "output/shipping_bill_cell.png",
-            cells[
-                "shipping_bill_number"
-            ],
-        )
-
-        cv2.imwrite(
-            "output/date_cell.png",
-            cells["shipping_date"],
         )
 
         # -------------------------------------------------
@@ -610,12 +576,8 @@ class ShippingBillOCR:
                 "x2": coordinates[2],
                 "y2": coordinates[3],
             },
-
             "port_code_candidates": port_results,
-
             "shipping_bill_candidates": sb_results,
-
             "shipping_date_candidates": date_results,
-
             "whole_row_candidates": whole_row_results,
         }

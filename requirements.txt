@@ -4,3 +4,7 @@ opencv-python
 pytesseract
 numpy
 pg8000
+FastAPI
+uvicorn
+python-multipart
+python-dotenv

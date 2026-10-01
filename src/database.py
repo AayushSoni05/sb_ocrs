@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 from typing import Any
-
+from dotenv import load_dotenv
 import pg8000.dbapi
 
+load_dotenv()
 
 # =========================================================
 # POSTGRESQL CONFIGURATION
